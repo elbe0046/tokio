@@ -1,6 +1,6 @@
 use crate::runtime::handle::Handle;
 use crate::runtime::shell::Shell;
-use crate::runtime::{blocking, io, time, Callback, Runtime, Spawner};
+use crate::runtime::{blocking, io, time, Callback, ParkShim, Runtime, Spawner};
 
 use std::fmt;
 #[cfg(not(loom))]
@@ -66,6 +66,8 @@ pub struct Builder {
 
     /// To run before each worker thread stops
     pub(super) before_stop: Option<Callback>,
+
+    pub(super) park_shim: Option<ParkShim>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +109,8 @@ impl Builder {
             // No worker thread callbacks
             after_start: None,
             before_stop: None,
+
+            park_shim: None,
         }
     }
 
@@ -294,6 +298,17 @@ impl Builder {
         self
     }
 
+    /// Adds a park shim that dictates what the underlying `Park` duration will use.
+    ///
+    /// Very shady stuff.
+    pub fn with_park<F>(&mut self, f: F) -> &mut Self
+    where
+        F: FnMut(Option<std::time::Duration>) -> Option<std::time::Duration> + Sync + Send + 'static,
+    {
+        self.park_shim = Some(Arc::new(std::sync::Mutex::new(Box::new(f))));
+        self
+    }
+
     /// Creates the configured `Runtime`.
     ///
     /// The returned `ThreadPool` instance is ready to spawn tasks.
@@ -324,8 +339,9 @@ impl Builder {
 
         let clock = time::create_clock();
 
+        let park_shim = self.park_shim.take();
         // Create I/O driver
-        let (io_driver, io_handle) = io::create_driver(self.enable_io)?;
+        let (io_driver, io_handle) = io::create_driver(self.enable_io, park_shim)?;
         let (driver, time_handle) = time::create_driver(self.enable_time, io_driver, clock.clone());
 
         let spawner = Spawner::Shell;
@@ -416,8 +432,10 @@ cfg_rt_core! {
 
             let clock = time::create_clock();
 
+            let park_shim = self.park_shim.take();
+
             // Create I/O driver
-            let (io_driver, io_handle) = io::create_driver(self.enable_io)?;
+            let (io_driver, io_handle) = io::create_driver(self.enable_io, park_shim)?;
 
             let (driver, time_handle) = time::create_driver(self.enable_time, io_driver, clock.clone());
 
@@ -470,8 +488,9 @@ cfg_rt_threaded! {
             assert!(core_threads <= self.max_threads, "Core threads number cannot be above max limit");
 
             let clock = time::create_clock();
+            let park_shim = self.park_shim.take();
 
-            let (io_driver, io_handle) = io::create_driver(self.enable_io)?;
+            let (io_driver, io_handle) = io::create_driver(self.enable_io, park_shim)?;
             let (driver, time_handle) = time::create_driver(self.enable_time, io_driver, clock.clone());
             let (scheduler, launch) = ThreadPool::new(core_threads, Parker::new(driver));
             let spawner = Spawner::ThreadPool(scheduler.spawner().clone());

@@ -5,7 +5,7 @@ pub(crate) use scheduled_io::ScheduledIo; // pub(crate) for tests
 
 use crate::loom::sync::atomic::AtomicUsize;
 use crate::park::{Park, Unpark};
-use crate::runtime::context;
+use crate::runtime::{context, ParkShim};
 use crate::util::slab::{Address, Slab};
 
 use mio::event::Evented;
@@ -25,6 +25,8 @@ pub(crate) struct Driver {
     inner: Arc<Inner>,
 
     _wakeup_registration: mio::Registration,
+
+    park_shim: Option<ParkShim>,
 }
 
 /// A reference to an I/O driver
@@ -66,7 +68,7 @@ fn _assert_kinds() {
 impl Driver {
     /// Creates a new event loop, returning any error that happened during the
     /// creation.
-    pub(crate) fn new() -> io::Result<Driver> {
+    pub(crate) fn new(park_shim: Option<ParkShim>) -> io::Result<Driver> {
         let io = mio::Poll::new()?;
         let wakeup_pair = mio::Registration::new2();
 
@@ -86,6 +88,7 @@ impl Driver {
                 n_sources: AtomicUsize::new(0),
                 wakeup: wakeup_pair.1,
             }),
+            park_shim,
         })
     }
 
@@ -173,12 +176,24 @@ impl Park for Driver {
     }
 
     fn park(&mut self) -> io::Result<()> {
-        self.turn(None)?;
+        let new_duration = if let Some(ref mut shim) = self.park_shim {
+            let f = &mut *shim.lock().unwrap();
+            f(None)
+        } else {
+            None
+        };
+        self.turn(new_duration)?;
         Ok(())
     }
 
     fn park_timeout(&mut self, duration: Duration) -> io::Result<()> {
-        self.turn(Some(duration))?;
+        let new_duration = if let Some(ref mut shim) = self.park_shim {
+            let f = &mut *shim.lock().unwrap();
+            f(Some(duration))
+        } else {
+            Some(duration)
+        };
+        self.turn(new_duration)?;
         Ok(())
     }
 }
@@ -186,6 +201,13 @@ impl Park for Driver {
 impl fmt::Debug for Driver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Driver")
+    }
+}
+
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for Driver {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        self.inner.io.as_raw_fd()
     }
 }
 

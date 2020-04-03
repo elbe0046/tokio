@@ -80,6 +80,29 @@ const REMOTE_FIRST_INTERVAL: u8 = 31;
 // Tracks the current BasicScheduler
 scoped_thread_local!(static CURRENT: Context);
 
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for BasicScheduler<crate::runtime::time::Driver> {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        use crate::park::Either;
+
+        match self.park {
+            Either::A(ref time_driver) => {
+                time_driver.as_raw_fd()
+            }
+            Either::B(ref either_driver) => {
+                match either_driver {
+                    Either::A(ref io_driver) => {
+                        io_driver.as_raw_fd()
+                    }
+                    Either::B(_) => {
+                        unimplemented!()
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<P> BasicScheduler<P>
 where
     P: Park,

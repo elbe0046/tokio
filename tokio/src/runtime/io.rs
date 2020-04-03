@@ -12,6 +12,7 @@ pub(crate) use variant::*;
 mod variant {
     use crate::io::driver;
     use crate::park::{Either, ParkThread};
+    use crate::runtime::ParkShim;
 
     use std::io;
 
@@ -27,12 +28,12 @@ mod variant {
     /// When the `io-driver` feature is **not** enabled, this is `()`.
     pub(crate) type Handle = Option<driver::Handle>;
 
-    pub(crate) fn create_driver(enable: bool) -> io::Result<(Driver, Handle)> {
+    pub(crate) fn create_driver(enable: bool, park_shim: Option<ParkShim>) -> io::Result<(Driver, Handle)> {
         #[cfg(loom)]
         assert!(!enable);
 
         if enable {
-            let driver = driver::Driver::new()?;
+            let driver = driver::Driver::new(park_shim)?;
             let handle = driver.handle();
 
             Ok((Either::A(driver), Some(handle)))
